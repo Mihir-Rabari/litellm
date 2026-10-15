@@ -24,15 +24,6 @@ use crate::errors::RustBridgeDeclined;
 const ROUTE_HOST_MODULE: &str = "litellm.rust_bridge.responses.route_host";
 
 fn run_responses(py: Python<'_>, call: NativeCall<'_>, asynchronous: bool) -> PyResult<Py<PyAny>> {
-    let resolved = call.resolved()?;
-    if let Some(reason) = py
-        .import(ROUTE_HOST_MODULE)?
-        .getattr("decline_reason")?
-        .call1((&resolved,))?
-        .extract::<Option<String>>()?
-    {
-        return Err(RustBridgeDeclined::new_err(reason));
-    }
     let argument = |name: &str| present(&call.kwargs, &call.base, name);
     let model = argument("model")?
         .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("model is required"))?

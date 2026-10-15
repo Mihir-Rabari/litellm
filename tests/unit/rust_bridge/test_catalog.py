@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Generator
+from collections.abc import Generator, Iterator
 from typing import Final
 
 import pytest
@@ -8,12 +8,14 @@ import pytest
 from litellm.rust_bridge import catalog, configuration
 from litellm.rust_bridge.catalog import (
     Context,
+    Feature,
     LoggerContext,
     LoggerRule,
     Route,
     RouteContext,
     RouteRule,
     Rules,
+    Target,
 )
 from litellm.rust_bridge.configuration import Decision, Rollout
 
@@ -82,6 +84,11 @@ def test_logger_rollout_obeys_the_global_switch() -> None:
         (RouteContext(Route.RESPONSES, provider="openai", model="other"), Decision.PYTHON),
         (RouteContext(Route.RESPONSES, provider="anthropic", model="m"), Decision.PYTHON),
         (RouteContext(Route.MESSAGES, provider="openai", model="m"), Decision.PYTHON),
+        (RouteContext(Route.MESSAGES, target=Target.MESSAGES), Decision.RUST_REQUIRED),
+        (RouteContext(Route.MESSAGES, target=Target.CHAT_COMPLETIONS), Decision.PYTHON),
+        (RouteContext(Route.MESSAGES), Decision.PYTHON),
+        (RouteContext(Route.OCR, features=frozenset({Feature.SAFEGUARDS_CLASSIFIER})), Decision.PYTHON),
+        (RouteContext(Route.OCR), Decision.RUST_REQUIRED),
     ),
 )
 def test_first_matching_rule_respects_every_constraint(context: RouteContext, expected: Decision) -> None:
@@ -93,6 +100,9 @@ def test_first_matching_rule_respects_every_constraint(context: RouteContext, ex
             models=frozenset({"m"}),
         ),
         RouteRule(Route.RESPONSES, Rollout.PYTHON_ONLY),
+        RouteRule(Route.MESSAGES, Rollout.RUST_REQUIRED, targets=frozenset({Target.MESSAGES})),
+        RouteRule(Route.OCR, Rollout.PYTHON_ONLY, features=frozenset({Feature.SAFEGUARDS_CLASSIFIER})),
+        RouteRule(Route.OCR, Rollout.RUST_REQUIRED),
     )
 
     assert catalog.decision(context, rules) is expected
@@ -165,11 +175,30 @@ def test_all_domains_share_rollout_switches_and_first_match(
     assert catalog.decision(context, ()) is Decision.PYTHON
 
 
-@pytest.mark.parametrize("context", (RouteContext(Route.OCR),))
+@pytest.mark.parametrize(
+    "context", (RouteContext(Route.OCR), RouteContext(Route.OCR, features=frozenset({Feature.SAFEGUARDS_CLASSIFIER})))
+)
 def test_empty_constraints_match_nothing(context: Context) -> None:
     rules: Final[Rules] = (
         RouteRule(Route.OCR, Rollout.RUST_REQUIRED, providers=frozenset()),
         RouteRule(Route.OCR, Rollout.RUST_REQUIRED, models=frozenset()),
+        RouteRule(Route.OCR, Rollout.RUST_REQUIRED, features=frozenset()),
     )
 
     assert catalog.decision(context, rules) is Decision.PYTHON
+
+
+def _messages_rule_providers() -> Iterator[str]:
+    for rule in catalog.RULES:
+        if isinstance(rule, RouteRule) and rule.route is Route.MESSAGES and rule.providers is not None:
+            yield from rule.providers
+
+
+@pytest.mark.parametrize("target", (Target.CHAT_COMPLETIONS, Target.RESPONSES))
+@pytest.mark.parametrize("provider", (None, *sorted(frozenset(_messages_rule_providers()))))
+def test_translated_messages_stay_on_python_for_every_provider(target: Target, provider: str | None) -> None:
+    configuration.rust(True)
+
+    assert catalog.decision(RouteContext(Route.MESSAGES, provider=provider, model="m", target=target)) is (
+        Decision.PYTHON
+    )
