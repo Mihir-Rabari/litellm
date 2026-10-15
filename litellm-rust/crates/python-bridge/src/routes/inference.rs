@@ -5,7 +5,7 @@ use litellm_cache_response::{CachePolicy, CacheScope, ScopedCache};
 use litellm_callbacks_legacy_python::LoggingOperation;
 use litellm_core_utils::get_llm_provider_logic::get_custom_llm_provider;
 use litellm_host::{call::HostedMachine, protocol::Protocol};
-use litellm_host_python::{PythonBinding, PythonHostCalls, from_py};
+use litellm_host_python::{CallOptions, PythonBinding, PythonHostCalls, PythonLifecycle, from_py};
 use litellm_http::transport::Error as TransportError;
 use litellm_inference::RouteError;
 use litellm_secrets::source::SecretSource;
@@ -102,6 +102,10 @@ impl InferenceHost {
         self.view.argument(py, arguments, name)
     }
 
+    pub fn request<'py>(&self, py: Python<'py>) -> PyResult<&Bound<'py, PyDict>> {
+        self.view.request(py)
+    }
+
     pub fn close(&mut self) {
         self.view.close();
     }
@@ -154,6 +158,7 @@ pub(super) trait InferenceRoute: Sized + 'static {
     const OPERATION: LoggingOperation;
     const SYNC_CALL_TYPE: &'static str;
     const ASYNC_CALL_TYPE: &'static str;
+    const LIFECYCLE: PythonLifecycle = crate::lifecycle::binding;
 
     fn new(
         http: litellm_http::Client,
@@ -204,6 +209,6 @@ where
         },
         host,
         hooks,
-        asynchronous,
+        CallOptions::new(asynchronous, R::LIFECYCLE),
     )
 }

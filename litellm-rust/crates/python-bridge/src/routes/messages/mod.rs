@@ -46,7 +46,7 @@ fn run_messages(py: Python<'_>, call: NativeCall<'_>, asynchronous: bool) -> PyR
         },
         MessagesPythonHost::new(call.view()?, asynchronous),
         hooks,
-        asynchronous,
+        crate::lifecycle::call_options(asynchronous),
     )
 }
 

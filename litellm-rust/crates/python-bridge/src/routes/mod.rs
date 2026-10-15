@@ -140,7 +140,7 @@ fn run_public_call<H, M>(
     + 'static,
     host: H,
     hooks: impl PythonCallHooks + 'static,
-    asynchronous: bool,
+    options: litellm_host_python::CallOptions,
 ) -> PyResult<Py<PyAny>>
 where
     H: PythonBinding + PythonHostCalls<H::Protocol> + 'static,
@@ -157,7 +157,7 @@ where
             .with(hooks)
             .with(crate::preflight::SdkPolicy),
         arguments,
-        crate::lifecycle::call_options(asynchronous),
+        options,
     )
 }
 

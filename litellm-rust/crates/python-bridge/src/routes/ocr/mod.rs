@@ -46,7 +46,7 @@ fn run_ocr(py: Python<'_>, call: NativeCall<'_>, asynchronous: bool) -> PyResult
         },
         OcrPythonHost::new(call.view()?),
         hooks,
-        asynchronous,
+        crate::lifecycle::call_options(asynchronous),
     )
 }
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable
 from typing import Final, Protocol, cast  # noqa: TID251  # validates dynamically loaded native callables
 
+from litellm.responses.streaming_iterator import ResponsesAPIStreamingIterator, SyncResponsesAPIStreamingIterator
 from litellm.rust_bridge.bindings import NativeBinding
 from litellm.rust_bridge.public_call import NativeCall
 from litellm.types.llms.openai import ResponsesAPIResponse
@@ -12,14 +13,14 @@ class NativeResponses(Protocol):
     def __call__(
         self,
         request: NativeCall,
-    ) -> ResponsesAPIResponse: ...
+    ) -> ResponsesAPIResponse | SyncResponsesAPIStreamingIterator: ...
 
 
 class NativeAresponses(Protocol):
     def __call__(
         self,
         request: NativeCall,
-    ) -> Awaitable[ResponsesAPIResponse]: ...
+    ) -> Awaitable[ResponsesAPIResponse | ResponsesAPIStreamingIterator]: ...
 
 
 def _responses_binding(value: object) -> NativeResponses | None:

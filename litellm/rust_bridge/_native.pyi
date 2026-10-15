@@ -6,6 +6,7 @@ import httpx
 from pydantic import JsonValue
 
 from litellm.llms.base_llm.ocr.transformation import OCRResponse
+from litellm.responses.streaming_iterator import ResponsesAPIStreamingIterator, SyncResponsesAPIStreamingIterator
 from litellm.rust_bridge.public_call import NativeCall
 from litellm.types.llms.anthropic_messages.anthropic_response import AnthropicMessagesResponse
 from litellm.types.llms.openai import ResponsesAPIResponse
@@ -71,10 +72,10 @@ def acompletion(
 ) -> Coroutine[object, object, ModelResponse]: ...
 def responses(
     call: NativeCall,
-) -> ResponsesAPIResponse: ...
+) -> ResponsesAPIResponse | SyncResponsesAPIStreamingIterator: ...
 def aresponses(
     call: NativeCall,
-) -> Coroutine[object, object, ResponsesAPIResponse]: ...
+) -> Coroutine[object, object, ResponsesAPIResponse | ResponsesAPIStreamingIterator]: ...
 def messages(
     call: NativeCall,
 ) -> AnthropicMessagesResponse | Iterator[bytes]: ...

@@ -12,7 +12,6 @@ use litellm_host_python::present;
 use litellm_inference_responses::{ResponsesRoute, route::Responses};
 use litellm_secrets::source::SecretSource;
 use pyo3::prelude::*;
-use serde_json::Value;
 pub(crate) use websocket::ResponsesWebSocketConnection;
 
 use super::{
@@ -22,6 +21,10 @@ use super::{
 use crate::errors::RustBridgeDeclined;
 
 const ROUTE_HOST_MODULE: &str = "litellm.rust_bridge.responses.route_host";
+
+fn streams(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {
+    py.import("litellm.rust_bridge.responses.streams")
+}
 
 fn run_responses(py: Python<'_>, call: NativeCall<'_>, asynchronous: bool) -> PyResult<Py<PyAny>> {
     let resolved = call.resolved()?;
@@ -58,15 +61,6 @@ fn run_responses(py: Python<'_>, call: NativeCall<'_>, asynchronous: bool) -> Py
             "native HTTP responses provider",
         ));
     }
-    if argument("stream")?
-        .map(|value| litellm_host_python::from_py::<Value>(&value))
-        .transpose()?
-        .is_some_and(|value| value == Value::Bool(true))
-    {
-        return Err(RustBridgeDeclined::new_err(
-            "native Python responses streaming",
-        ));
-    }
     let host = InferenceHost::new(call.view()?, ROUTE_HOST_MODULE);
     run_inference::<ResponsesRoute, _>(py, call, asynchronous, ResponsesPythonHost::new(host))
 }
@@ -86,6 +80,7 @@ impl InferenceRoute for ResponsesRoute {
     const OPERATION: LoggingOperation = LoggingOperation::Responses;
     const SYNC_CALL_TYPE: &'static str = "responses";
     const ASYNC_CALL_TYPE: &'static str = "aresponses";
+    const LIFECYCLE: litellm_host_python::PythonLifecycle = streams;
 
     fn new(
         http: litellm_http::Client,

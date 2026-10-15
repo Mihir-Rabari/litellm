@@ -266,7 +266,6 @@ async def test_unstarted_native_inference_has_no_provider_or_callback_effects(
 @pytest.mark.parametrize(
     "options",
     (
-        {"stream": True},
         {"extra_body": {"provider_option": True}},
         {"mock_response": "mock"},
         {"num_retries": 1},
