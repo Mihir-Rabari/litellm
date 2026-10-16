@@ -94,6 +94,16 @@ def _member_budget_spend_keys(models: Sequence[str]) -> tuple[str, ...]:
     )
 
 
+class _StaticOverallBudgetReader:
+    def __init__(self, budget: float | None) -> None:
+        self.budget = budget
+        self.calls: list[tuple[str, str]] = []
+
+    async def get_team_member_overall_budget(self, *, user_id: str, team_id: str) -> float | None:
+        self.calls.append((user_id, team_id))
+        return self.budget
+
+
 ENFORCED = RouterFallbackBudgetCheck(is_enforced=lambda: True)
 NOT_ENFORCED = RouterFallbackBudgetCheck(is_enforced=lambda: False)
 
@@ -309,6 +319,152 @@ async def test_team_member_limiter_is_not_called_without_member_caps() -> None:
 
     assert within_budget is True
     assert redis_cache.async_get_cache.call_args_list == []
+
+
+@pytest.mark.asyncio
+async def test_team_member_overall_budget_refuses_an_exhausted_paid_target(monkeypatch) -> None:
+    """Mirrors the auth-time team member check: recorded spend against the member's overall cap."""
+    from litellm.proxy import proxy_server
+
+    counter_reads: list[dict] = []
+
+    async def _record_counter(**kwargs):
+        counter_reads.append(kwargs)
+        return kwargs["fallback_spend"]
+
+    monkeypatch.setattr(proxy_server, "get_current_spend", _record_counter, raising=False)
+    reader: Final = _StaticOverallBudgetReader(budget=5.0)
+    token: Final = _token(user_id="u1", team_id="t1", team_member_spend=5.0)
+
+    within_budget: Final = await is_token_within_budget_for_model(
+        model="paid-model",
+        valid_token=token,
+        llm_router=_router(),
+        team_member_overall_budget_reader=reader,
+    )
+
+    assert within_budget is False
+    assert reader.calls == [("u1", "t1")]
+    assert counter_reads == [
+        {"counter_key": "spend:team_member:u1:t1", "fallback_spend": 5.0, "max_budget": 5.0}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_team_member_overall_budget_allows_a_paid_target_when_under_cap(monkeypatch) -> None:
+    from litellm.proxy import proxy_server
+
+    async def _record_spend(**kwargs):
+        return kwargs["fallback_spend"]
+
+    monkeypatch.setattr(proxy_server, "get_current_spend", _record_spend, raising=False)
+    reader: Final = _StaticOverallBudgetReader(budget=50.0)
+    token: Final = _token(user_id="u1", team_id="t1", team_member_spend=10.0)
+
+    within_budget: Final = await is_token_within_budget_for_model(
+        model="paid-model",
+        valid_token=token,
+        llm_router=_router(),
+        team_member_overall_budget_reader=reader,
+    )
+
+    assert within_budget is True
+
+
+@pytest.mark.asyncio
+async def test_overall_budget_reader_is_not_consulted_without_recorded_member_spend() -> None:
+    """A token without the member's spend skips the check, the same gate the auth-time check uses."""
+    reader: Final = _StaticOverallBudgetReader(budget=5.0)
+    token: Final = _token(user_id="u1", team_id="t1")
+
+    within_budget: Final = await is_token_within_budget_for_model(
+        model="paid-model",
+        valid_token=token,
+        llm_router=_router(),
+        team_member_overall_budget_reader=reader,
+    )
+
+    assert within_budget is True
+    assert reader.calls == []
+
+
+@pytest.mark.asyncio
+async def test_team_member_overall_budget_never_refuses_a_zero_cost_target() -> None:
+    reader: Final = _StaticOverallBudgetReader(budget=5.0)
+    token: Final = _token(user_id="u1", team_id="t1", team_member_spend=10.0)
+
+    within_budget: Final = await is_token_within_budget_for_model(
+        model="free-model",
+        valid_token=token,
+        llm_router=_router(),
+        team_member_overall_budget_reader=reader,
+    )
+
+    assert within_budget is True
+    assert reader.calls == []
+
+
+@pytest.mark.asyncio
+async def test_team_member_overall_budget_is_not_evaluated_without_a_reader() -> None:
+    token: Final = _token(user_id="u1", team_id="t1", team_member_spend=10.0)
+
+    within_budget: Final = await is_token_within_budget_for_model(
+        model="paid-model",
+        valid_token=token,
+        llm_router=_router(),
+    )
+
+    assert within_budget is True
+
+
+@pytest.mark.asyncio
+async def test_team_member_overall_budget_of_zero_is_not_a_cap() -> None:
+    """A cap of zero means no cap, the same gate the auth-time check applies."""
+    reader: Final = _StaticOverallBudgetReader(budget=0.0)
+    token: Final = _token(user_id="u1", team_id="t1", team_member_spend=10.0)
+
+    within_budget: Final = await is_token_within_budget_for_model(
+        model="paid-model",
+        valid_token=token,
+        llm_router=_router(),
+        team_member_overall_budget_reader=reader,
+    )
+
+    assert within_budget is True
+
+
+@pytest.mark.asyncio
+async def test_router_fallback_budget_check_threads_the_overall_budget_reader(monkeypatch) -> None:
+    from litellm.proxy import proxy_server
+
+    async def _record_spend(**kwargs):
+        return kwargs["fallback_spend"]
+
+    monkeypatch.setattr(proxy_server, "get_current_spend", _record_spend, raising=False)
+    reader: Final = _StaticOverallBudgetReader(budget=5.0)
+    at_cap: Final = _token(user_id="u1", team_id="t1", team_member_spend=5.0)
+    under: Final = _token(user_id="u1", team_id="t1", team_member_spend=1.0)
+    budget_check: Final = RouterFallbackBudgetCheck(
+        is_enforced=lambda: True,
+        team_member_overall_budget_reader=reader,
+    )
+
+    assert (
+        await budget_check(
+            model="paid-model",
+            request_kwargs={"metadata": {"user_api_key_auth": at_cap}},
+            llm_router=_router(),
+        )
+        is False
+    )
+    assert (
+        await budget_check(
+            model="paid-model",
+            request_kwargs={"metadata": {"user_api_key_auth": under}},
+            llm_router=_router(),
+        )
+        is True
+    )
 
 
 @pytest.mark.asyncio

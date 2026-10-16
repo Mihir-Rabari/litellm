@@ -375,7 +375,11 @@ from litellm.proxy.auth.auth_utils import (
     log_once_if_budget_reservation_disabled,
     warn_once_if_custom_auth_skips_common_checks,
 )
-from litellm.proxy.auth.fallback_budget import RouterFallbackBudgetCheck, router_fallback_budget_check
+from litellm.proxy.auth.fallback_budget import (
+    ProxyTeamMemberOverallBudgetReader,
+    RouterFallbackBudgetCheck,
+    router_fallback_budget_check,
+)
 from litellm.proxy.auth.fallback_model_access import router_fallback_access_check
 from litellm.proxy.auth.handle_jwt import JWTHandler
 from litellm.proxy.auth.litellm_license import AUTO_ROUTER_LICENSE_REMEDY, LicenseCheck
@@ -7334,6 +7338,7 @@ class ProxyConfig:
             fallback_budget_check=RouterFallbackBudgetCheck(
                 is_enforced=router_fallback_budget_check.is_enforced,
                 team_member_model_budget_limiter=model_max_budget_limiter,
+                team_member_overall_budget_reader=ProxyTeamMemberOverallBudgetReader(),
             ),
             auto_router_capability_limit=_license_check.auto_router_capability_limit,
         )
@@ -7832,6 +7837,7 @@ class ProxyConfig:
                         fallback_budget_check=RouterFallbackBudgetCheck(
                             is_enforced=router_fallback_budget_check.is_enforced,
                             team_member_model_budget_limiter=model_max_budget_limiter,
+                            team_member_overall_budget_reader=ProxyTeamMemberOverallBudgetReader(),
                         ),
                         auto_router_capability_limit=_license_check.auto_router_capability_limit,
                     )

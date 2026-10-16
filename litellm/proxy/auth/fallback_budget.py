@@ -11,9 +11,12 @@ attempted, mirroring `fallback_model_access.py`. It deliberately leaves the prim
 a zero-cost model is never blocked by budget, and only the paid fallback is refused. On by default;
 set `general_settings.enforce_fallback_budget: false` to restore the unguarded behaviour.
 
-Scope: the key's and the user's `max_budget`, plus the team member's per-model caps. Not covered yet,
-and each needs a read-only evaluation path before it can be: team and team-member overall, end-user,
-org, global and other per-model budgets, whose auth-path functions enforce rather than report (they
+Scope: the key's and the user's `max_budget`, plus the team member's per-model caps and overall
+budget. The member's overall cap is resolved read-only through `ProxyTeamMemberOverallBudgetReader`:
+the auth-path check fires a threshold alert and raises, so reusing it would do both for a target
+that is then skipped, and the reader loads the same membership row and spend counter without either.
+Not covered yet, and each needs a read-only evaluation path before it can be: team, end-user, org,
+global and other per-model budgets, whose auth-path functions enforce rather than report (they
 raise), so reusing them would fire threshold alerts and take spend reservations for a target that is
 then skipped; and the key's rolling `budget_limits` windows, whose accumulated spend lives only in
 per-window counters (`spend:key:{token}:window:{budget_duration}`), so enforcing them means more
@@ -42,10 +45,12 @@ from litellm._logging import verbose_proxy_logger
 from litellm.proxy._types import UserAPIKeyAuth
 from litellm.proxy.auth.auth_checks import (  # noqa: F401  # legacy module exports
     _is_model_cost_zero,  # pyright: ignore[reportPrivateUsage,reportUnusedImport]  # backwards-compatible package export
+    get_team_membership,
     is_model_cost_zero,  # pyright: ignore[reportPrivateUsage]  # the zero-cost predicate the auth-time budget checks use; no public equivalent
 )
 from litellm.router import Router
 from litellm.types.llms.base import LiteLLMBaseModel
+from litellm.utils import get_utc_datetime
 
 
 class _RequestMetadata(LiteLLMBaseModel):
@@ -64,6 +69,30 @@ class _TeamMemberModelBudgetLimiter(Protocol):
         team_member_model_max_budget: Mapping[str, object],
         model: str,
     ) -> bool: ...
+
+
+class _TeamMemberOverallBudgetReader(Protocol):
+    async def get_team_member_overall_budget(self, *, user_id: str, team_id: str) -> float | None: ...
+
+
+class ProxyTeamMemberOverallBudgetReader:
+    """Resolves the member's overall cap the way the auth-time check does, without its alert and raise."""
+
+    async def get_team_member_overall_budget(self, *, user_id: str, team_id: str) -> float | None:
+        from litellm.proxy import proxy_server
+
+        if proxy_server.prisma_client is None:
+            return None
+        membership: Final = await get_team_membership(
+            user_id=user_id,
+            team_id=team_id,
+            prisma_client=proxy_server.prisma_client,
+            user_api_key_cache=proxy_server.user_api_key_cache,
+        )
+        budget_row: Final = membership.litellm_budget_table if membership is not None else None
+        if budget_row is None:
+            return None
+        return budget_row.effective_max_budget(now=get_utc_datetime())
 
 
 def _token_in_metadata(metadata: object) -> UserAPIKeyAuth | None:
@@ -120,9 +149,10 @@ async def is_token_within_budget_for_model(
     valid_token: UserAPIKeyAuth,
     llm_router: Router,
     team_member_model_budget_limiter: _TeamMemberModelBudgetLimiter | None = None,
+    team_member_overall_budget_reader: _TeamMemberOverallBudgetReader | None = None,
 ) -> bool:
     """
-    True when the key and the user behind it can still pay for `model`.
+    True when the key, the user and the team member behind it can still pay for `model`.
 
     A zero-cost fallback target is always allowed: refusing it would deny a request on spend some
     other model accrued, which is the same reasoning behind the auth-time bypass.
@@ -156,6 +186,26 @@ async def is_token_within_budget_for_model(
         if user_spend >= user_budget:
             return False
 
+    member_recorded_spend: Final = valid_token.team_member_spend
+    if (
+        team_member_overall_budget_reader is not None
+        and member_recorded_spend is not None
+        and isinstance(valid_token.user_id, str)
+        and isinstance(valid_token.team_id, str)
+    ):
+        member_budget: Final = await team_member_overall_budget_reader.get_team_member_overall_budget(
+            user_id=valid_token.user_id,
+            team_id=valid_token.team_id,
+        )
+        if member_budget is not None and member_budget > 0:
+            member_spend: Final = await _counter_spend(
+                counter_key=f"spend:team_member:{valid_token.user_id}:{valid_token.team_id}",
+                fallback_spend=member_recorded_spend,
+                max_budget=member_budget,
+            )
+            if member_spend >= member_budget:
+                return False
+
     team_member_model_max_budget: Final = valid_token.team_member_model_max_budget
     if (
         team_member_model_budget_limiter is not None
@@ -186,6 +236,7 @@ class RouterFallbackBudgetCheck:
 
     is_enforced: Callable[[], bool]
     team_member_model_budget_limiter: _TeamMemberModelBudgetLimiter | None = None
+    team_member_overall_budget_reader: _TeamMemberOverallBudgetReader | None = None
 
     async def __call__(self, *, model: str, request_kwargs: Mapping[str, object], llm_router: Router) -> bool:
         if not self.is_enforced():
@@ -201,6 +252,7 @@ class RouterFallbackBudgetCheck:
                     valid_token=valid_token,
                     llm_router=llm_router,
                     team_member_model_budget_limiter=self.team_member_model_budget_limiter,
+                    team_member_overall_budget_reader=self.team_member_overall_budget_reader,
                 ):
                     return False
             except Exception as e:  # noqa: BLE001  # fail closed: a spend lookup failure must not bill the caller
