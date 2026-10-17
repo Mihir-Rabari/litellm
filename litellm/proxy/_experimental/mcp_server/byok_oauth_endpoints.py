@@ -175,6 +175,16 @@ async def _session_key_is_live(session_key: str | None) -> bool:
     return True
 
 
+async def live_user_id_from_session_cookie(request: Request) -> str | None:
+    """The UI-cookie user id, but only while the embedded session key still resolves, so a
+    logged-out or password-changed cookie stops identifying the caller on every gateway
+    path, not just at the BYOK session gate"""
+    user_id, session_key = _session_identity_from_cookie(request)
+    if not user_id or not await _session_key_is_live(session_key):
+        return None
+    return user_id
+
+
 async def get_authenticated_browser_user_id(request: Request) -> str | None:
     from datetime import datetime, timezone
 

@@ -6226,7 +6226,7 @@ async def test_interactive_bridge_authorize_seals_sso_user_into_state():
 
     with (
         patch(
-            "litellm.proxy._experimental.mcp_server.byok_oauth_endpoints.user_id_from_session_cookie",
+            "litellm.proxy._experimental.mcp_server.byok_oauth_endpoints.live_user_id_from_session_cookie",
             return_value="sso-user-42",
         ),
         patch(
@@ -6291,7 +6291,7 @@ async def test_bridge_authorize_gates_on_the_egress_server_access_resolver(user_
     try:
         with (
             patch(
-                "litellm.proxy._experimental.mcp_server.byok_oauth_endpoints.user_id_from_session_cookie",
+                "litellm.proxy._experimental.mcp_server.byok_oauth_endpoints.live_user_id_from_session_cookie",
                 return_value="bridge-user-1",
             ),
             patch(
@@ -6362,7 +6362,7 @@ async def test_bridge_authorize_reload_failure_denies_or_stays_retryable(reload_
     try:
         with (
             patch(
-                "litellm.proxy._experimental.mcp_server.byok_oauth_endpoints.user_id_from_session_cookie",
+                "litellm.proxy._experimental.mcp_server.byok_oauth_endpoints.live_user_id_from_session_cookie",
                 return_value="bridge-user-1",
             ),
             patch(
@@ -6408,7 +6408,7 @@ async def test_interactive_bridge_authorize_without_session_redirects_to_login()
 
     server = _bridge_server(auth_type=MCPAuth.oauth_delegate, client_id="admin-client", registration_url=None)
     with patch(
-        "litellm.proxy._experimental.mcp_server.byok_oauth_endpoints.user_id_from_session_cookie",
+        "litellm.proxy._experimental.mcp_server.byok_oauth_endpoints.live_user_id_from_session_cookie",
         return_value=None,
     ):
         response = await authorize_with_server(
@@ -6421,6 +6421,143 @@ async def test_interactive_bridge_authorize_without_session_redirects_to_login()
             code_challenge_method="S256",
         )
     assert "/sso/key/generate" in response.headers["location"]
+
+
+def _ui_session_cookie_request(master_key: str, session_key: str):
+    import jwt
+
+    request = _bridge_mock_request()
+    request.cookies = {
+        "token": jwt.encode(
+            {
+                "user_id": "sso-user-42",
+                "key": session_key,
+                "login_method": "sso",
+                "exp": int(time.time()) + 600,
+            },
+            master_key,
+            algorithm="HS256",
+        )
+    }
+    return request
+
+
+@pytest.mark.asyncio
+async def test_interactive_bridge_authorize_rejects_revoked_ui_session_cookie():
+    """A saved UI cookie whose backing session key no longer resolves, because logout or a
+    password change removed the session row, must not identify the caller. The bridge
+    authorize sends the browser through litellm login instead of sealing the revoked user
+    into a gateway authorization code (#46917), matching the BYOK session gate that already
+    rejects the same cookie."""
+    from litellm.proxy._experimental.mcp_server.discoverable_endpoints import (
+        authorize_with_server,
+    )
+    from litellm.proxy._experimental.mcp_server.mcp_server_manager import (
+        global_mcp_server_manager,
+    )
+    from litellm.proxy._types import UserAPIKeyAuth
+
+    server = _bridge_server(auth_type=MCPAuth.oauth_delegate, client_id="admin-client", registration_url=None)
+    admitted = UserAPIKeyAuth(user_id="sso-user-42")
+    admitted.mcp_admitted_user_subject = True
+    request = _ui_session_cookie_request(master_key="master-secret", session_key="sk-revoked-session-key")
+    captured: dict = {}
+
+    def _capture(**kwargs):
+        captured.update(kwargs)
+        return "mocked_encrypted_state"
+
+    with (
+        patch("litellm.proxy.proxy_server.master_key", "master-secret"),
+        patch("litellm.proxy.proxy_server.prisma_client", MagicMock()),
+        patch(
+            "litellm.proxy.auth.auth_checks.get_key_object",
+            new=AsyncMock(side_effect=HTTPException(status_code=401, detail="session not found")),
+        ),
+        patch(
+            "litellm.proxy._experimental.mcp_server.auth.user_api_key_auth_mcp.MCPRequestHandler.reload_admitted_user",
+            new=AsyncMock(return_value=admitted),
+        ),
+        patch.object(
+            global_mcp_server_manager,
+            "get_allowed_mcp_servers",
+            new=AsyncMock(return_value=[server.server_id]),
+        ),
+        patch(
+            "litellm.proxy._experimental.mcp_server.discoverable_endpoints.encode_state_with_base_url",
+            side_effect=_capture,
+        ),
+    ):
+        response = await authorize_with_server(
+            request=request,
+            mcp_server=server,
+            client_id="ignored",
+            redirect_uri="http://127.0.0.1:60108/callback",
+            state="s",
+            code_challenge="chal",
+            code_challenge_method="S256",
+        )
+
+    assert captured == {}
+    assert "/sso/key/generate" in response.headers["location"]
+
+
+@pytest.mark.asyncio
+async def test_interactive_bridge_authorize_seals_the_user_of_a_live_ui_session_cookie():
+    """A cookie whose embedded session key still resolves keeps authorizing the bridge
+    flow, so the revocation check cannot over-block and lock every signed-in browser out
+    of the gateway authorize."""
+    from litellm.proxy._experimental.mcp_server.discoverable_endpoints import (
+        authorize_with_server,
+    )
+    from litellm.proxy._experimental.mcp_server.mcp_server_manager import (
+        global_mcp_server_manager,
+    )
+    from litellm.proxy._types import UserAPIKeyAuth
+
+    server = _bridge_server(auth_type=MCPAuth.oauth_delegate, client_id="admin-client", registration_url=None)
+    admitted = UserAPIKeyAuth(user_id="sso-user-42")
+    admitted.mcp_admitted_user_subject = True
+    request = _ui_session_cookie_request(master_key="master-secret", session_key="sk-live-session-key")
+    captured: dict = {}
+
+    def _capture(**kwargs):
+        captured.update(kwargs)
+        return "mocked_encrypted_state"
+
+    with (
+        patch("litellm.proxy.proxy_server.master_key", "master-secret"),
+        patch("litellm.proxy.proxy_server.prisma_client", MagicMock()),
+        patch(
+            "litellm.proxy.auth.auth_checks.get_key_object",
+            new=AsyncMock(return_value=admitted),
+        ),
+        patch(
+            "litellm.proxy._experimental.mcp_server.auth.user_api_key_auth_mcp.MCPRequestHandler.reload_admitted_user",
+            new=AsyncMock(return_value=admitted),
+        ),
+        patch.object(
+            global_mcp_server_manager,
+            "get_allowed_mcp_servers",
+            new=AsyncMock(return_value=[server.server_id]),
+        ),
+        patch(
+            "litellm.proxy._experimental.mcp_server.discoverable_endpoints.encode_state_with_base_url",
+            side_effect=_capture,
+        ),
+    ):
+        response = await authorize_with_server(
+            request=request,
+            mcp_server=server,
+            client_id="ignored",
+            redirect_uri="http://127.0.0.1:60108/callback",
+            state="s",
+            code_challenge="chal",
+            code_challenge_method="S256",
+        )
+
+    assert captured["litellm_user_id"] == "sso-user-42"
+    assert "/sso/key/generate" not in response.headers["location"]
 
 
 @pytest.mark.asyncio
