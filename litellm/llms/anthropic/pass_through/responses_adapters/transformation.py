@@ -272,9 +272,14 @@ class LiteLLMAnthropicToResponsesAPIAdapter:
 
     @staticmethod
     def _assistant_block_group_key(indexed_block: tuple[int, Mapping[str, object]]) -> str:
-        """Group a run of consecutive thinking blocks together; keep every other block alone."""
+        """Group runs of consecutive thinking or text blocks together; keep every other block alone."""
         index, block = indexed_block
-        return "thinking" if block.get("type") in ("thinking", "redacted_thinking") else f"block:{index}"
+        btype: Final = block.get("type")
+        if btype in ("thinking", "redacted_thinking"):
+            return "thinking"
+        if btype == "text":
+            return "text"
+        return f"block:{index}"
 
     @classmethod
     def _assistant_group_to_input_items(
@@ -285,6 +290,16 @@ class LiteLLMAnthropicToResponsesAPIAdapter:
         if btype in ("thinking", "redacted_thinking"):
             replayed: Final = responses_reasoning_items_from_thinking_blocks(group)
             return tuple(dict(item) for item in replayed)
+        if btype == "text":
+            return (
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": block.get("text", "")} for block in group
+                    ],
+                },
+            )
         if btype == "tool_use":
             return (
                 {
@@ -451,19 +466,6 @@ class LiteLLMAnthropicToResponsesAPIAdapter:
                         for _, group in groupby(enumerate(blocks), key=self._assistant_block_group_key)
                         for item in self._assistant_group_to_input_items(tuple(block for _, block in group))
                     )
-                    asst_parts: list[dict[str, object]] = [  # mutable-ok: API message payload
-                        {"type": "output_text", "text": block.get("text", "")}
-                        for block in blocks
-                        if block.get("type") == "text"
-                    ]
-                    if asst_parts:
-                        input_items.append(
-                            {
-                                "type": "message",
-                                "role": "assistant",
-                                "content": asst_parts,
-                            }
-                        )
 
         return input_items
 

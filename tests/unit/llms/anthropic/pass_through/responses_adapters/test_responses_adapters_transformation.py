@@ -727,6 +727,43 @@ class TestTranslateMessagesToResponsesInput:
         types = [item["type"] for item in result]
         assert types == ["message", "function_call", "function_call_output", "message"]
 
+    def test_assistant_text_stays_between_thinking_and_its_tool_calls(self):
+        """Assistant text must not sit between the function_call batch and its outputs."""
+        messages = [
+            {"role": "user", "content": "run noop twice"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "work"},
+                    {"type": "text", "text": "Working."},
+                    {"type": "tool_use", "id": "call_a", "name": "noop", "input": {}},
+                    {"type": "tool_use", "id": "call_b", "name": "noop", "input": {}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "call_a", "content": "done"},
+                    {"type": "tool_result", "tool_use_id": "call_b", "content": "done"},
+                ],
+            },
+        ]
+        result = _translate_messages(messages)
+        assert [item["type"] for item in result] == [
+            "message",
+            "reasoning",
+            "message",
+            "function_call",
+            "function_call",
+            "function_call_output",
+            "function_call_output",
+        ]
+        assert result[2] == {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Working."}],
+        }
+
     def test_user_text_and_image_mixed(self):
         """User message with both text and image produces both parts."""
         messages = [
