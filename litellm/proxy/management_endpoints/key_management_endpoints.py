@@ -3420,11 +3420,15 @@ async def _validate_update_key_data(
     # - Anyone else (non-PROXY_ADMIN, not the owner, not a team member
     #   on a team key): must pass _check_key_admin_access (PROXY_ADMIN
     #   / key-owner / team-admin / org-admin of the key).
-    # - max_budget / spend / budget_limits: always require the admin
-    #   check, even for the key owner or a team member (matches the
-    #   existing admin-only budget semantics).  budget_limits uses
-    #   model_fields_set because an explicit null/[] clears the field
-    #   and must gate the same as setting or changing it.
+    # - max_budget / spend / budget_limits / budget_id / budget_duration:
+    #   always require the admin check, even for the key owner or a team
+    #   member (matches the existing admin-only budget semantics).
+    #   budget_limits, soft_budget and budget_id use model_fields_set
+    #   because an explicit null clears the field and must gate the same
+    #   as setting or changing it.  budget_id selects the tier a capped
+    #   key can live in, so clearing it can remove the cap outright.
+    #   budget_duration gates on a value change like max_budget because
+    #   null only stops the resets, which tightens the key.
     # - spend gates on presence alone (not a value diff): the DB spend
     #   lags the live cross-pod counter, so letting an "unchanged" spend
     #   through the non-admin path would let a key owner / team member
@@ -3435,6 +3439,8 @@ async def _validate_update_key_data(
         or data.spend is not None
         or "budget_limits" in data.model_fields_set
         or "soft_budget" in data.model_fields_set
+        or "budget_id" in data.model_fields_set
+        or (data.budget_duration is not None and data.budget_duration != existing_key_row.budget_duration)
     )
 
     _existing_metadata: Final = getattr(existing_key_row, "metadata", None)
@@ -3494,7 +3500,7 @@ async def _validate_update_key_data(
             hashed_token=hashed_key,
             prisma_client=checked_prisma_client,
             user_api_key_cache=user_api_key_cache,
-            route=("/key/update (max_budget/spend)" if _is_budget_change else "/key/update"),
+            route=("/key/update (budget)" if _is_budget_change else "/key/update"),
         )
     check_denied_passthrough_routes_caller_permission(
         data,

@@ -12467,7 +12467,7 @@ class TestKeyOwnerPrivilegeEscalation:
     Policy:
     - created_by == caller → can edit any non-budget field without admin
     - created_by != caller (assigned user) → must pass admin check for any edit
-    - budget changes (max_budget/spend) → always require admin
+    - budget changes (max_budget/spend/budget_id/budget_duration) → always require admin
     - PROXY_ADMIN → unrestricted
     """
 
@@ -12711,6 +12711,63 @@ class TestKeyOwnerPrivilegeEscalation:
                 user_api_key_cache=MagicMock(),
             )
         mock_check.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_creator_cannot_shorten_own_budget_duration(self):
+        """Shortening budget_duration reschedules the reset that clears the key's
+        spend, so a duration change must pass the admin check even for the creator."""
+        data = UpdateKeyRequest(key="sk-test", budget_duration="1s")
+        existing = self._make_existing_key(created_by="creator-123")
+        existing.budget_duration = "30d"
+        auth = self._make_auth(user_id="creator-123")
+
+        mock_check = AsyncMock(
+            side_effect=HTTPException(status_code=403, detail="Not authorized")
+        )
+        with patch(
+            "litellm.proxy.management_endpoints.key_management_endpoints._check_key_admin_access",
+            mock_check,
+        ):
+            with pytest.raises(HTTPException):
+                await _validate_update_key_data(
+                    data=data,
+                    existing_key_row=existing,
+                    user_api_key_dict=auth,
+                    llm_router=None,
+                    premium_user=False,
+                    prisma_client=AsyncMock(),
+                    user_api_key_cache=MagicMock(),
+                )
+        mock_check.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("budget_id", ["tier-higher", None])
+    async def test_creator_cannot_change_own_budget_id(self, budget_id):
+        """Selecting a different budget tier, or detaching the one the key follows,
+        changes the cap the key enforces, so an explicit budget_id requires admin."""
+        data = UpdateKeyRequest(key="sk-test", budget_id=budget_id)
+        existing = self._make_existing_key(created_by="creator-123")
+        existing.budget_id = "tier-low"
+        auth = self._make_auth(user_id="creator-123")
+
+        mock_check = AsyncMock(
+            side_effect=HTTPException(status_code=403, detail="Not authorized")
+        )
+        with patch(
+            "litellm.proxy.management_endpoints.key_management_endpoints._check_key_admin_access",
+            mock_check,
+        ):
+            with pytest.raises(HTTPException):
+                await _validate_update_key_data(
+                    data=data,
+                    existing_key_row=existing,
+                    user_api_key_dict=auth,
+                    llm_router=None,
+                    premium_user=False,
+                    prisma_client=AsyncMock(),
+                    user_api_key_cache=MagicMock(),
+                )
+        mock_check.assert_called_once()
 
 
 class TestKeyAliasSkipValidationOnUnchanged:
