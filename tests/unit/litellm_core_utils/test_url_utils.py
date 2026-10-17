@@ -328,6 +328,28 @@ class TestValidationMasterSwitch:
             validate_url("http://127.0.0.1/")
 
 
+class TestBlockedAddressMessage:
+    """In the SSRF threat model the caller is the attacker, so the block
+    message must not reflect the resolved address back to them."""
+
+    @pytest.mark.parametrize(
+        "resolved_ip",
+        ["10.0.0.25", "127.0.0.1", "169.254.169.254", "fd00::1", "::ffff:10.0.0.25"],
+    )
+    def test_message_does_not_reveal_resolved_ip(self, monkeypatch, resolved_ip):
+        monkeypatch.setattr(litellm, "user_url_allowed_hosts", [])
+
+        def fake(host, port, *a, **kw):
+            family = socket.AF_INET6 if ":" in resolved_ip else socket.AF_INET
+            return [(family, socket.SOCK_STREAM, 6, "", (resolved_ip, port))]
+
+        monkeypatch.setattr(url_utils.socket, "getaddrinfo", fake)
+        with pytest.raises(SSRFError) as exc_info:
+            validate_url("https://internal-name.example.invalid/document.txt")
+        assert resolved_ip not in str(exc_info.value)
+        assert "`user_url_allowed_hosts`" in str(exc_info.value)
+
+
 class TestHostAllowlist:
     def test_allowlisted_hostname_permits_private_ip(self, monkeypatch):
         monkeypatch.setattr(litellm, "user_url_allowed_hosts", ["internal.corp"])

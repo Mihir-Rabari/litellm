@@ -857,7 +857,7 @@ def test_a2a_task_methods_pass_through_verbatim_and_push_callbacks_are_validated
             ("http://169.254.169.254/latest/meta-data/", "Push notification URL must use HTTPS"),
             (
                 "https://10.0.0.1/callback",
-                "URL targets a blocked address (10.0.0.1). If this is a legitimate internal service, "
+                "URL targets a blocked address. If this is a legitimate internal service, "
                 "add the host to `user_url_allowed_hosts` in litellm_settings.",
             ),
         ):
