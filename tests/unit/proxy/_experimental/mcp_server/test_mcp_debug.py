@@ -16,6 +16,7 @@ from litellm.proxy._experimental.mcp_server.mcp_debug import (
     describe_upstream_http_failure,
 )
 from litellm.proxy._experimental.mcp_server.outbound_credentials.types import AuthResolution
+from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
 
 
 class TestIsDebugEnabled:
@@ -205,6 +206,44 @@ class TestWrapSendWithDebugHeaders:
         asyncio.run(wrapped(body_msg))
 
         assert captured[0] == body_msg
+
+
+class TestMaybeBuildDebugHeaders:
+    @pytest.mark.parametrize(
+        ("user_role", "expects_debug_headers"),
+        (
+            (None, False),
+            (LitellmUserRoles.INTERNAL_USER, False),
+            (LitellmUserRoles.TEAM, False),
+            (LitellmUserRoles.PROXY_ADMIN, True),
+            (LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY, True),
+        ),
+    )
+    def test_debug_headers_follow_the_caller_admin_role(self, user_role, expects_debug_headers):
+        headers = MCPDebug.maybe_build_debug_headers(
+            raw_headers={MCP_DEBUG_REQUEST_HEADER: "true"},
+            scope={"type": "http", "headers": []},
+            mcp_servers=None,
+            oauth2_headers=None,
+            client_ip="127.0.0.1",
+            user_api_key_auth=UserAPIKeyAuth(api_key="sk-test", user_role=user_role),
+        )
+        assert bool(headers) is expects_debug_headers
+        if not expects_debug_headers:
+            return
+        assert headers["x-mcp-debug-outbound-url"] == "(unknown)"
+        assert headers["x-mcp-debug-server-auth-type"] == "(none)"
+
+    def test_unauthenticated_caller_gets_no_debug_headers(self):
+        headers = MCPDebug.maybe_build_debug_headers(
+            raw_headers={MCP_DEBUG_REQUEST_HEADER: "true"},
+            scope={"type": "http", "headers": []},
+            mcp_servers=None,
+            oauth2_headers=None,
+            client_ip="127.0.0.1",
+            user_api_key_auth=None,
+        )
+        assert headers == {}
 
 
 class TestDescribeUpstreamHttpFailure:

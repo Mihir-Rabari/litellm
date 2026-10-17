@@ -34,6 +34,7 @@ from litellm.proxy._experimental.mcp_server.mcp_context import active_mcp_reques
 from litellm.proxy._experimental.mcp_server.mcp_server_manager import ListedToolsCaller
 from litellm.proxy._types import (
     LiteLLM_MCPServerTable,
+    LitellmUserRoles,
     MCPTransport,
     UserAPIKeyAuth,
 )
@@ -2038,7 +2039,7 @@ async def test_mcp_routing_initialize_to_stateful_no_session_to_stateless(
             "litellm.proxy._experimental.mcp_server.server.extract_mcp_auth_context",
             new_callable=AsyncMock,
             return_value=(
-                UserAPIKeyAuth(user_id="debug-user"),
+                UserAPIKeyAuth(user_id="debug-user", user_role=LitellmUserRoles.PROXY_ADMIN),
                 None,
                 None,
                 None,

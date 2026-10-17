@@ -6,7 +6,9 @@ Client-side debugging for MCP authentication flows.
 
 When a client sends the ``x-litellm-mcp-debug: true`` header, LiteLLM
 returns masked diagnostic headers in the response so operators can
-troubleshoot OAuth2 issues without SSH access to the gateway.
+troubleshoot OAuth2 issues without SSH access to the gateway. Only callers
+holding a proxy admin role receive them, because the headers reveal upstream
+deployment details.
 
 Response headers returned (all values are masked for safety):
 
@@ -122,6 +124,7 @@ from starlette.types import Message, Send
 
 from litellm.litellm_core_utils.secret_redaction import REDACTED, redact_string
 from litellm.litellm_core_utils.sensitive_data_masker import SensitiveDataMasker
+from litellm.types.proxy.auth.user_api_key_auth import UserAPIKeyAuth, user_api_key_has_admin_view
 
 if TYPE_CHECKING:
     from litellm.proxy._experimental.mcp_server.outbound_credentials.types import AuthResolution
@@ -361,13 +364,17 @@ class MCPDebug:
         mcp_servers: list[str] | None,
         oauth2_headers: dict[str, str] | None,
         client_ip: str | None,
+        user_api_key_auth: UserAPIKeyAuth | None,
     ) -> dict[str, str]:
         """
-        Build debug headers if debug mode is enabled, otherwise return empty dict.
+        Build debug headers if debug mode is enabled and the caller holds an
+        admin role, otherwise return empty dict.
 
         This is the single entry point called from the MCP request handler.
         """
         if not raw_headers or not MCPDebug.is_debug_enabled(raw_headers):
+            return {}
+        if user_api_key_auth is None or not user_api_key_has_admin_view(user_api_key_auth):
             return {}
 
         from litellm.proxy._experimental.mcp_server.auth.user_api_key_auth_mcp import (
