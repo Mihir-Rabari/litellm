@@ -9,7 +9,7 @@ Endpoints here:
 - PUT `/v1/mcp/server` -  Edits an existing mcp server.
 - DELETE `/v1/mcp/server/{server_id}` - Deletes the mcp server given `server_id`.
 - GET `/v1/mcp/tools - lists all the tools available for a key
-- GET `/v1/mcp/access_groups` - lists all available MCP access groups
+- GET `/v1/mcp/access_groups` - lists the MCP access groups of the servers the caller can access
 - GET `/v1/mcp/discover` - Returns curated list of well-known MCP servers for discovery UI
 - GET `/v1/mcp/openapi-registry` - Returns well-known OpenAPI APIs with OAuth 2.0 metadata
 
@@ -88,7 +88,6 @@ from litellm.proxy.management_helpers.audit_logs import (
     is_audit_logging_enabled,
 )
 from litellm.repositories.table_repositories import (
-    MCPServerRepository,
     MCPUserCredentialsRepository,
 )
 
@@ -1112,35 +1111,13 @@ if MCP_AVAILABLE:
         user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
     ):
         """
-        Get all available MCP access groups from the database AND config
+        MCP access groups of the servers the caller can access
         """
-        from litellm.proxy._experimental.mcp_server.mcp_server_manager import (
-            global_mcp_server_manager,
+        accessible_servers: Final = await _resolve_accessible_mcp_servers(user_api_key_dict)
+        access_groups: Final = frozenset(
+            chain.from_iterable(server.mcp_access_groups or [] for server in accessible_servers)
         )
-        from litellm.proxy.proxy_server import prisma_client
-
-        access_groups: Final = set()
-
-        # Get from config-loaded servers
-        for server in global_mcp_server_manager.config_mcp_servers.values():
-            if server.access_groups:
-                access_groups.update(server.access_groups)
-
-        # Get from DB
-        if prisma_client is not None:
-            try:
-                mcp_servers: Final[Sequence[prisma_models.LiteLLM_MCPServerTable]] = await MCPServerRepository(
-                    prisma_client
-                ).table.find_many()
-                for server in mcp_servers:
-                    if hasattr(server, "mcp_access_groups") and server.mcp_access_groups:
-                        access_groups.update(server.mcp_access_groups)
-            except Exception as e:
-                verbose_proxy_logger.debug("Error getting MCP access groups: %s", e)
-
-        # Convert to sorted list
-        access_groups_list: Final = sorted(list(access_groups))
-        return {"access_groups": access_groups_list}
+        return {"access_groups": sorted(access_groups)}
 
     @router.get(
         "/network/client-ip",

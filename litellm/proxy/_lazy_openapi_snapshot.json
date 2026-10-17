@@ -42714,7 +42714,7 @@
     "paths": {
       "/v1/mcp/access_groups": {
         "get": {
-          "description": "Get all available MCP access groups from the database AND config",
+          "description": "MCP access groups of the servers the caller can access",
           "operationId": "get_mcp_access_groups_v1_mcp_access_groups_get",
           "responses": {
             "200": {

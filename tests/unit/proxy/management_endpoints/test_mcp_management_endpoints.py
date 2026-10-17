@@ -11704,3 +11704,80 @@ async def test_mcp_register_application_type_reaches_upstream_or_is_rejected(
             assert posted["application_type"] == application_type
     finally:
         mgmt_endpoints._temporary_mcp_servers.pop(server.server_id, None)
+
+
+class TestGetMCPAccessGroups:
+    """GET /v1/mcp/access_groups must only list groups attached to servers the caller can
+    reach (https://github.com/BerriAI/litellm/issues/46912)"""
+
+    @pytest.mark.asyncio
+    async def test_get_mcp_access_groups_returns_only_groups_of_servers_the_caller_can_reach(self):
+        """
+        An internal user granted one server must not learn group names attached to
+        servers outside their scope
+        """
+        mock_user_auth = generate_mock_user_api_key_auth(user_role=LitellmUserRoles.INTERNAL_USER)
+        reachable_server: Final = generate_mock_mcp_server_db_record(
+            server_id="reachable_server", alias="Reachable"
+        ).model_copy(update={"mcp_access_groups": ["group-for-reachable-server"]})
+
+        mock_manager = MagicMock()
+        mock_manager.config_mcp_servers = {
+            "private_backend": SimpleNamespace(access_groups=["group-for-private-server"]),
+        }
+        mock_manager.get_all_allowed_mcp_servers = AsyncMock(return_value=[reachable_server])
+
+        with (
+            patch(
+                "litellm.proxy.management_endpoints.mcp_management_endpoints.global_mcp_server_manager",
+                mock_manager,
+            ),
+            patch(
+                "litellm.proxy._experimental.mcp_server.mcp_server_manager.global_mcp_server_manager",
+                mock_manager,
+            ),
+            patch(
+                "litellm.proxy.management_endpoints.mcp_management_endpoints.build_effective_auth_contexts",
+                AsyncMock(return_value=[mock_user_auth]),
+            ),
+            patch_proxy_general_settings({}),
+        ):
+            result: Final = await mgmt_endpoints.get_mcp_access_groups(user_api_key_dict=mock_user_auth)
+
+        assert result == {"access_groups": ["group-for-reachable-server"]}
+
+    @pytest.mark.asyncio
+    async def test_get_mcp_access_groups_view_all_mode_returns_all_groups(self):
+        """Callers the dashboard grid shows every server for must still list every group"""
+        mock_user_auth = generate_mock_user_api_key_auth(user_role=LitellmUserRoles.INTERNAL_USER)
+        all_servers: Final = [
+            generate_mock_mcp_server_db_record(server_id="one", alias="One").model_copy(
+                update={"mcp_access_groups": ["alpha-group"]}
+            ),
+            generate_mock_mcp_server_db_record(server_id="two", alias="Two").model_copy(
+                update={"mcp_access_groups": ["beta-group"]}
+            ),
+        ]
+
+        mock_manager = MagicMock()
+        mock_manager.config_mcp_servers = {}
+        mock_manager.get_all_mcp_servers_unfiltered = AsyncMock(return_value=all_servers)
+
+        with (
+            patch(
+                "litellm.proxy.management_endpoints.mcp_management_endpoints._get_user_mcp_management_mode",
+                return_value="view_all",
+            ),
+            patch(
+                "litellm.proxy.management_endpoints.mcp_management_endpoints.global_mcp_server_manager",
+                mock_manager,
+            ),
+            patch(
+                "litellm.proxy._experimental.mcp_server.mcp_server_manager.global_mcp_server_manager",
+                mock_manager,
+            ),
+            patch_proxy_general_settings({}),
+        ):
+            result: Final = await mgmt_endpoints.get_mcp_access_groups(user_api_key_dict=mock_user_auth)
+
+        assert result == {"access_groups": ["alpha-group", "beta-group"]}
